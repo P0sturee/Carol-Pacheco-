@@ -12,10 +12,11 @@ const SUPABASE_ANON_KEY = "sb_publishable_qnc45c1a9x4iuRrihggHVQ_maw0qLKp";
 const WHATSAPP_NUMBER = "5541991949877"; // formato: 55 + DDD + número, só dígitos
 
 // URL pública do backend Lovable publicado (SEM barra no final).
-// É de lá que vem o endpoint de pagamento /api/public/create-mercadopago-preference.
-// Pendente: só preencher quando o Mercado Pago estiver configurado (token adicionado
-// em Secrets no Lovable). Até lá, deixe como null — o checkout funciona normalmente
-// até a etapa de pagamento, que fica registrada como pendente.
+// É de lá que vêm os endpoints de pagamento da InfinitePay:
+//   /api/public/create-infinitepay-checkout  → gera o link de pagamento (Pix ou cartão)
+//   /api/public/confirm-infinitepay-payment  → confere o pagamento quando o cliente volta
+// O handle da InfinitePay (caroline-pacheco-aq9) fica configurado no backend, não aqui.
+// Se ficar null, o checkout funciona até registrar o pedido e o pagamento fica pendente.
 window.APP_BACKEND_ORIGIN = "https://carolpacheco-backend.lovable.app";
 
 /* ------------------------------------------------------------
@@ -47,6 +48,14 @@ function formatBRL(value){
   return value.toLocaleString('pt-BR', {style:'currency', currency:'BRL'});
 }
 function onlyDigits(str){ return (str || '').replace(/\D/g, ''); }
+
+// Todo texto vindo do banco passa por aqui antes de entrar em innerHTML,
+// pra um nome/descrição de produto nunca virar código rodando no site.
+function escapeHTML(str){
+  return String(str ?? '').replace(/[&<>"']/g, c => (
+    {'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]
+  ));
+}
 
 function isValidCPF(cpf){
   cpf = onlyDigits(cpf);
@@ -170,7 +179,7 @@ async function loadProducts(){
     renderProducts();
   } catch(err){
     console.error('[Carol Pacheco] Erro ao carregar produtos:', err);
-    grid.innerHTML = `<div class="empty-state">Não foi possível carregar o cardápio agora. Puxe a tela pra baixo pra atualizar, ou fale com a gente no WhatsApp.<br><small style="opacity:.6">${err.message || ''}</small></div>`;
+    grid.innerHTML = `<div class="empty-state">Não foi possível carregar o cardápio agora. Puxe a tela pra baixo pra atualizar, ou fale com a gente no WhatsApp.<br><small style="opacity:.6">${escapeHTML(err.message)}</small></div>`;
   }
 }
 
@@ -190,15 +199,15 @@ function renderProducts(){
     return `
     <div class="product-card">
       <div class="product-media">
-        <img src="${p.image_url || 'assets/placeholder-cake.jpg'}" alt="${p.name}" loading="lazy">
+        <img src="${escapeHTML(p.image_url || 'placeholder-cake.jpeg')}" alt="${escapeHTML(p.name)}" loading="lazy">
         <span class="stock-tag ${tagClass}">${tagText}</span>
       </div>
       <div class="product-info">
-        <h3>${p.name}</h3>
-        <p>${p.description || ''}</p>
+        <h3>${escapeHTML(p.name)}</h3>
+        <p>${escapeHTML(p.description)}</p>
         <div class="product-footer">
           <div class="price">${formatBRL(p.price)} <span>/un.</span></div>
-          <button class="add-btn" data-product-id="${p.id}" ${outOfStock ? 'disabled' : ''}>
+          <button class="add-btn" data-product-id="${escapeHTML(p.id)}" ${outOfStock ? 'disabled' : ''}>
             ${outOfStock ? 'Esgotado' : '+ Adicionar'}
           </button>
         </div>
@@ -230,8 +239,8 @@ function openVariantSheet(product){
   document.getElementById('variantProductName').textContent = product.name;
   const optionsWrap = document.getElementById('variantOptions');
   optionsWrap.innerHTML = product.product_variations.map(v => `
-    <button class="variant-option" data-variation-id="${v.id}">
-      <span>${v.name}</span>
+    <button class="variant-option" data-variation-id="${escapeHTML(v.id)}">
+      <span>${escapeHTML(v.name)}</span>
       <span class="extra">${v.extra_price > 0 ? '+ ' + formatBRL(v.extra_price) : 'Sem custo extra'}</span>
     </button>
   `).join('');
@@ -314,16 +323,16 @@ function renderCart(){
   checkoutBtn.disabled = false;
   list.innerHTML = state.cart.map(i => `
     <div class="cart-item">
-      <img src="${i.image_url || 'assets/placeholder-cake.jpg'}" alt="${i.name}">
+      <img src="${escapeHTML(i.image_url || 'placeholder-cake.jpeg')}" alt="${escapeHTML(i.name)}">
       <div class="cart-item-info">
-        <h4>${i.name}</h4>
-        ${i.variation_name ? `<div class="variant">Calda: ${i.variation_name}</div>` : ''}
+        <h4>${escapeHTML(i.name)}</h4>
+        ${i.variation_name ? `<div class="variant">Calda: ${escapeHTML(i.variation_name)}</div>` : ''}
         <div class="cart-item-controls">
-          <button class="qty-btn" data-key="${i.key}" data-delta="-1">−</button>
+          <button class="qty-btn" data-key="${escapeHTML(i.key)}" data-delta="-1">−</button>
           <span>${i.qty}</span>
-          <button class="qty-btn" data-key="${i.key}" data-delta="1">+</button>
+          <button class="qty-btn" data-key="${escapeHTML(i.key)}" data-delta="1">+</button>
           <span class="cart-item-price">${formatBRL(i.unit_price * i.qty)}</span>
-          <button class="remove-item" data-key="${i.key}">Remover</button>
+          <button class="remove-item" data-key="${escapeHTML(i.key)}">Remover</button>
         </div>
       </div>
     </div>
@@ -374,7 +383,8 @@ overlay.addEventListener('click', closeCart);
 /* ============================================================
    CHECKOUT — SEM LOGIN, SEM E-MAIL
    Fluxo: nome + telefone + CPF  →  create_order (Supabase)
-          →  preferência Mercado Pago  →  redireciona pro pagamento
+          →  link de pagamento InfinitePay (Pix ou cartão)  →  redireciona pro pagamento
+          →  cliente volta pro site  →  backend confere o pagamento
    Nenhum dado de conta é criado; nenhuma notificação é enviada.
    ============================================================ */
 const checkoutBtn = document.getElementById('checkoutBtn');
@@ -387,63 +397,112 @@ const custName = document.getElementById('custName');
 const custPhone = document.getElementById('custPhone');
 const custCpf = document.getElementById('custCpf');
 
-const paymentMethodSelect = document.getElementById('paymentMethodSelect');
-const pixScreen = document.getElementById('pixScreen');
-const pixAmountEl = document.getElementById('pixAmount');
-const pixQrImg = document.getElementById('pixQrImg');
-const pixCopyCode = document.getElementById('pixCopyCode');
-const pixCopyBtn = document.getElementById('pixCopyBtn');
-const pixStatus = document.getElementById('pixStatus');
+const confirmTitle = document.getElementById('confirmTitle');
+const confirmMsg = document.getElementById('confirmMsg');
+const payStatus = document.getElementById('payStatus');
+const receiptLink = document.getElementById('receiptLink');
 
-let selectedPaymentMethod = 'card';
-let pixPollTimer = null;
+// Só redireciona pra páginas da própria InfinitePay, mesmo que o backend
+// devolva outra coisa por engano.
+const INFINITEPAY_URL = /^https:\/\/([a-z0-9-]+\.)*infinitepay\.io\//i;
 
-if (paymentMethodSelect){
-  paymentMethodSelect.addEventListener('click', (e) => {
-    const btn = e.target.closest('.pm-option');
-    if (!btn) return;
-    selectedPaymentMethod = btn.dataset.method;
-    paymentMethodSelect.querySelectorAll('.pm-option').forEach(el => el.classList.toggle('active', el === btn));
-  });
+let payPollTimer = null;
+
+// Troca o conteúdo do carrinho pela tela de confirmação.
+function showConfirmScreen(title, msg){
+  cartList.style.display = 'none';
+  checkoutForm.classList.remove('show');
+  drawerFoot.style.display = 'none';
+  confirmTitle.textContent = title;
+  confirmMsg.textContent = msg;
+  payStatus.textContent = '';
+  receiptLink.hidden = true;
+  confirmScreen.classList.add('show');
 }
 
-if (pixCopyBtn){
-  pixCopyBtn.addEventListener('click', async () => {
-    try{
-      await navigator.clipboard.writeText(pixCopyCode.value);
-      pixCopyBtn.textContent = 'Código copiado!';
-      pixCopyBtn.classList.add('copied');
-      setTimeout(() => {
-        pixCopyBtn.textContent = 'Copiar código Pix';
-        pixCopyBtn.classList.remove('copied');
-      }, 2200);
-    } catch(err){
-      // fallback pra navegadores sem permissão de clipboard: seleciona o texto
-      pixCopyCode.select();
-      document.execCommand('copy');
-    }
-  });
-}
-
-// Confere periodicamente se o Pix já foi pago, usando a mesma RPC pública
-// que já existe para status do pedido (get_order_public). Pra o cliente,
-// isso funciona como "atualização automática" sem precisar recarregar a página.
-async function pollPixPayment(orderId){
-  if (pixPollTimer) clearInterval(pixPollTimer);
-  pixPollTimer = setInterval(async () => {
+// Confere periodicamente se o pedido já consta como pago, usando a RPC pública
+// get_order_public. Desiste depois de ~3 minutos pra não ficar rodando pra sempre.
+function pollPayment(orderId, onPaid){
+  if (!supabaseClient) return;
+  if (payPollTimer) clearInterval(payPollTimer);
+  let attempts = 0;
+  payPollTimer = setInterval(async () => {
+    attempts += 1;
     try{
       const { data, error } = await supabaseClient.rpc('get_order_public', { p_order_id: orderId });
       if (error) throw error;
       const ord = Array.isArray(data) ? data[0] : data;
       if (ord && ord.payment_status === 'paid'){
-        clearInterval(pixPollTimer);
-        pixStatus.textContent = '✓ Pagamento confirmado! Obrigado pela encomenda.';
-        pixStatus.style.color = '#3FA463';
+        clearInterval(payPollTimer);
+        onPaid();
+        return;
       }
     } catch(err){
-      console.warn('[Carol Pacheco] Erro ao checar status do Pix:', err);
+      console.warn('[Carol Pacheco] Erro ao checar status do pagamento:', err);
+    }
+    if (attempts >= 36){
+      clearInterval(payPollTimer);
+      payStatus.textContent = 'Ainda não recebemos a confirmação. Se você já pagou, fale com a gente no WhatsApp que a Carol confere.';
     }
   }, 5000);
+}
+
+/* ------------------------------------------------------------
+   VOLTA DA INFINITEPAY
+   Depois de pagar, a InfinitePay manda o cliente de volta pro site com
+   ?order_nsu=…&transaction_nsu=…&slug=…&receipt_url=…&capture_method=…
+   Esses parâmetros NÃO provam pagamento (qualquer um pode digitar a URL):
+   quem decide é o backend, que consulta a InfinitePay (payment_check) e
+   compara o valor pago com o total do pedido no banco.
+   ------------------------------------------------------------ */
+async function handleInfinitePayReturn(){
+  const params = new URLSearchParams(window.location.search);
+  const orderId = params.get('order_nsu');
+  if (!orderId) return;
+
+  const transactionNsu = params.get('transaction_nsu');
+  const slug = params.get('slug');
+  const receiptUrl = params.get('receipt_url');
+
+  // Limpa a URL pra um F5 ou link compartilhado não repetir a verificação.
+  history.replaceState(null, '', window.location.pathname);
+
+  openCart();
+  showConfirmScreen('Conferindo seu pagamento…', 'Só um instante enquanto confirmamos com a InfinitePay.');
+  if (receiptUrl && INFINITEPAY_URL.test(receiptUrl)){
+    receiptLink.href = receiptUrl;
+    receiptLink.hidden = false;
+  }
+
+  const markPaid = () => {
+    confirmTitle.textContent = 'Pagamento confirmado!';
+    confirmMsg.textContent = 'Obrigado pela encomenda! A Carol já recebeu seu pedido.';
+    payStatus.textContent = '';
+  };
+
+  // 1) Pede pro backend conferir agora, sem esperar o webhook da InfinitePay chegar.
+  if (window.APP_BACKEND_ORIGIN && transactionNsu && slug){
+    try{
+      const resp = await fetch(`${window.APP_BACKEND_ORIGIN}/api/public/confirm-infinitepay-payment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: orderId, transaction_nsu: transactionNsu, slug }),
+      });
+      const result = await resp.json().catch(() => ({}));
+      if (resp.ok && result.paid){
+        markPaid();
+        return;
+      }
+    } catch(err){
+      console.warn('[Carol Pacheco] Erro ao confirmar pagamento:', err);
+    }
+  }
+
+  // 2) Ainda não confirmou (Pix pode levar alguns segundos): fica checando o pedido.
+  confirmTitle.textContent = 'Pedido recebido!';
+  confirmMsg.textContent = 'Assim que a InfinitePay confirmar o pagamento, esta tela atualiza sozinha.';
+  payStatus.textContent = 'Aguardando confirmação do pagamento…';
+  pollPayment(orderId, markPaid);
 }
 
 custPhone.addEventListener('input', () => custPhone.value = maskPhone(custPhone.value));
@@ -453,20 +512,11 @@ checkoutBtn.addEventListener('click', () => {
   const showingForm = checkoutForm.classList.contains('show');
   if (!showingForm){
     // primeira etapa: mostra formulário de identificação (sem login)
-    // Reseta explicitamente pra "cartão" toda vez que o formulário é aberto,
-    // pra nunca herdar uma seleção de Pix de uma tentativa anterior na mesma sessão.
-    selectedPaymentMethod = 'card';
-    if (paymentMethodSelect){
-      paymentMethodSelect.querySelectorAll('.pm-option').forEach(el => {
-        el.classList.toggle('active', el.dataset.method === 'card');
-      });
-    }
     cartList.style.display = 'none';
     checkoutForm.classList.add('show');
     checkoutBtn.textContent = 'Confirmar e pagar';
     return;
   }
-  console.log('[Carol Pacheco] Enviando pedido com método:', selectedPaymentMethod);
   submitOrder();
 });
 
@@ -516,79 +566,35 @@ async function submitOrder(){
     const { data: order, error: orderError } = await supabaseClient.rpc('create_order', orderPayload);
     if (orderError) throw orderError;
 
-    // 2) Gera o pagamento no Mercado Pago via endpoint HTTP público do backend Lovable.
-    //    Cartão: cria preferência e redireciona pro checkout hospedado do Mercado Pago.
-    //    Pix: cria o pagamento direto e mostra QR Code + copia-e-cola sem sair do site.
-    let payment = null;
-    let paymentPending = false;
+    // 2) Gera o link de pagamento da InfinitePay via backend Lovable. O backend lê o
+    //    total do pedido no banco (nunca confia no valor do navegador) e devolve a URL
+    //    do checkout hospedado, onde o cliente escolhe Pix ou cartão.
     const orderId = order.id ?? order[0]?.id;
-    console.log('[Carol Pacheco] Pedido criado:', orderId, '| Método selecionado:', selectedPaymentMethod);
+    console.log('[Carol Pacheco] Pedido criado:', orderId);
 
-    if (window.APP_BACKEND_ORIGIN && selectedPaymentMethod === 'pix'){
+    let checkoutUrl = null;
+    if (window.APP_BACKEND_ORIGIN){
       try{
-        const resp = await fetch(`${window.APP_BACKEND_ORIGIN}/api/public/create-pix-payment`, {
+        const resp = await fetch(`${window.APP_BACKEND_ORIGIN}/api/public/create-infinitepay-checkout`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ order_id: orderId }),
         });
-        const pix = await resp.json();
-        if (!resp.ok) throw new Error(pix?.error || 'Falha ao gerar Pix');
-
-        checkoutForm.classList.remove('show');
-        drawerFoot.style.display = 'none';
-        pixAmountEl.textContent = 'R$ ' + Number(pix.amount).toFixed(2).replace('.', ',');
-        pixQrImg.src = pix.qr_code_base64 ? `data:image/png;base64,${pix.qr_code_base64}` : '';
-        pixCopyCode.value = pix.qr_code || '';
-        pixScreen.classList.add('show');
-        pixStatus.textContent = 'Aguardando confirmação do pagamento…';
-        pixStatus.style.color = '';
-        state.cart = [];
-        renderCart();
-        pollPixPayment(orderId);
-        return;
-      } catch(pixErr){
-        console.error('[Carol Pacheco] Erro ao gerar Pix:', pixErr);
-        checkoutBtn.disabled = false;
-        checkoutBtn.textContent = 'Confirmar e pagar';
-        alert('Não foi possível gerar o Pix agora. Tente novamente ou escolha cartão de crédito.');
-        return;
-      }
-    }
-
-    if (window.APP_BACKEND_ORIGIN && selectedPaymentMethod === 'card'){
-      try{
-        const resp = await fetch(`${window.APP_BACKEND_ORIGIN}/api/public/create-mercadopago-preference`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ order_id: orderId, back_url: window.location.origin }),
-        });
-        payment = await resp.json();
+        const payment = await resp.json();
         if (!resp.ok) throw new Error(payment?.error || 'Falha ao criar pagamento');
+        if (!INFINITEPAY_URL.test(payment?.checkout_url || '')) throw new Error('Link de pagamento inválido');
+        checkoutUrl = payment.checkout_url;
       } catch(payErr){
         console.warn('Pagamento ainda não disponível:', payErr.message);
-        paymentPending = true;
       }
-    } else if (!window.APP_BACKEND_ORIGIN){
-      // Mercado Pago ainda não configurado (pendente por decisão do negócio) —
-      // o pedido é criado e registrado normalmente, só o pagamento fica pra depois.
-      paymentPending = true;
     }
 
-    const checkoutUrl = payment?.checkout_url || payment?.init_point;
-
-    // 3) Mostra confirmação. Se o pagamento já estiver configurado, redireciona pro
-    //    Mercado Pago; caso contrário, avisa que o pedido foi registrado e o
-    //    pagamento será combinado à parte (ex: via WhatsApp) enquanto isso não sobe.
-    checkoutForm.classList.remove('show');
-    drawerFoot.style.display = 'none';
-    confirmScreen.classList.add('show');
-
+    // 3) Mostra confirmação. Se o link saiu, redireciona pra InfinitePay; senão avisa
+    //    que o pedido foi registrado e o pagamento será combinado à parte (WhatsApp).
     if (checkoutUrl){
-      document.getElementById('confirmMsg').textContent = 'Redirecionando para o pagamento seguro do Mercado Pago…';
-    } else if (paymentPending){
-      document.getElementById('confirmMsg').textContent = 'Pedido registrado com sucesso! O pagamento ainda será habilitado — em breve você recebe as instruções para concluir.';
+      showConfirmScreen('Pedido enviado!', 'Redirecionando para o pagamento seguro da InfinitePay…');
     } else {
-      document.getElementById('confirmMsg').textContent = 'Pedido recebido! Em instantes você poderá concluir o pagamento.';
+      showConfirmScreen('Pedido registrado!', 'O pagamento ainda será habilitado — em breve você recebe as instruções para concluir.');
     }
 
     state.cart = [];
@@ -704,6 +710,7 @@ function initAnimations(){
    ============================================================ */
 document.addEventListener('DOMContentLoaded', () => {
   setWhatsappLinks();
+  handleInfinitePayReturn();
   loadStoreStatus();
   loadProducts();
   loadHours();
